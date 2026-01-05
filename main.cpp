@@ -18,7 +18,7 @@ void wyswietlanieMenu() {
     cout << "------MENU----------" << endl;
     cout << "1. Generator instancji" << endl;
     cout << "2. Algorytm naiwny" << endl;
-    cout << "3. Metaheurystyka haha" << endl;
+    cout << "3. Metaheurystyka" << endl;
     cout << "0. Wyjscie z programu" << endl;
     cout << "--------------------" << endl;
 }
