@@ -14,7 +14,7 @@
 using namespace std;
 
 struct Parametry {
-    int n = 0;
+    int n = 0; 
     int k = 0;
     int delta_k = 0;
     int l_neg = 0;
@@ -32,6 +32,36 @@ struct Instancja {
     bool spektrumIstnieje = false;
     bool spektrumZBledamiIstnieje = false;
 } I;
+
+struct KrawedzGrafu {
+    int doWierzcholka = -1;
+    int overlap = 0;
+    int kategoriaWagi = 3;
+};
+
+struct ParametryMrowkowe {
+    int liczbaIteracji = 100;
+    int liczbaMrowek = 50;
+    int limitKandydatow = 2;
+    double alfa = 0.2;
+    double beta = 0.6;
+    double parowanie = 0.10;
+    double q = 3.0;
+
+    int procentMrowekDijkstra = 25;  
+    int coIleKrokowDijkstra = 50;
+};
+
+struct WynikSciezki {
+    string sekwencja;
+    vector<int> sciezkaWierzcholkow;
+    vector<pair<int, int>> uzyteKrawedzie;
+    int liczbaKrawedziKat1 = 0;
+    int liczbaKrawedziKat2 = 0;
+    int liczbaKrawedziKat3 = 0;
+    int unikalneWierzcholki = 0;
+    int powtorzeniaWierzcholkow = 0;
+};
 
 const char NUKLEOTYDY[4] = { 'A', 'C', 'G', 'T' };
 
@@ -51,33 +81,14 @@ int znajdzIndeksWierzcholka(const vector<string>& wierzcholki, const string& oli
     return -1;
 }
 
-struct KrawedzGrafu {
-    int doWierzcholka = -1;
-    int overlap = 0;
-    int kategoriaWagi = 3; // 1 najlepsza, 2 srednia, 3 najgorsza
-};
-
-struct ParametryMrowkowe {
-    int liczbaIteracji = 300;
-    int liczbaMrowek = 150;
-    int limitKandydatow = 40;
-    double alfa = 1.5;
-    double beta = 1.8;
-    double parowanie = 0.10;
-    double q = 3.0;
-
-    int procentMrowekDijkstra = 10;  
-    int coIleKrokowDijkstra = 50;
-};
-
-int policzNajdluzszyOverlapDowolny(const string& lewy, const string& prawy, int maxOverlap) {
+int policzNajdluzszyOverlapDowolny(const string& lewy, const string& prawy) {
     int dlugoscLewy = lewy.size();
     int dlugoscPrawy = prawy.size();
     if (dlugoscLewy == 0 || dlugoscPrawy == 0) {
         return 0;
     }
 
-    int rzeczywistyMax = min({ dlugoscLewy, dlugoscPrawy, maxOverlap });
+    int rzeczywistyMax = min({ dlugoscLewy, dlugoscPrawy });
     for (int overlap = rzeczywistyMax; overlap >= 1; --overlap) {
         bool pasuje = true;
         for (int i = 0; i < overlap; ++i) {
@@ -97,9 +108,7 @@ int policzKategorieKrawedzi(int overlap, int k, int delta_k) {
     if (overlap <= 0) {
         return 3;
     }
-    // W klasycznym SBH (delta_k=0) "prawidlowy" krok okna o 1 daje overlap = k-1.
-    // Dla delta_k>0 dopuszczamy mniejszy overlap o ok. delta_k.
-    int minimalnyDobry = std::max(1, (k - 1) - delta_k);
+    int minimalnyDobry = max(1, (k - 1) - delta_k);
     if (overlap >= minimalnyDobry) {
         return 1;
     }
@@ -107,7 +116,6 @@ int policzKategorieKrawedzi(int overlap, int k, int delta_k) {
 }
 
 double policzHeurystyke(int overlap, int kategoria, bool czyOdwiedzony) {
-    // Preferujemy overlap w granicach i nieodwiedzone wierzcholki.
     double bonusOdwiedzin = czyOdwiedzony ? 0.65 : 1.0;
     double karaKategorii = (kategoria == 1) ? 1.0 : (kategoria == 2 ? 2.5 : 6.0);
     return bonusOdwiedzin * (overlap + 1.0) / karaKategorii;
@@ -116,35 +124,17 @@ double policzHeurystyke(int overlap, int kategoria, bool czyOdwiedzony) {
 int policzOdlegloscHammingaDoLimitu(const string& a, const string& b, int limit) {
     if (a.size() != b.size()) return limit + 1;
     int roznice = 0;
-    for (size_t i = 0; i < a.size(); ++i) {
+    for (int i = 0; i < a.size(); ++i) {
         if (a[i] != b[i]) {
-            ++roznice;
+            roznice++;
             if (roznice > limit) return roznice;
         }
     }
     return roznice;
 }
 
-struct WynikSciezki {
-    string sekwencja;
-    vector<int> sciezkaWierzcholkow;
-    vector<pair<int, int>> uzyteKrawedzie; // (z, do)
-    int liczbaKrawedziKat1 = 0;
-    int liczbaKrawedziKat2 = 0;
-    int liczbaKrawedziKat3 = 0;
-    int unikalneWierzcholki = 0;
-    int powtorzeniaWierzcholkow = 0;
-};
-
 double policzOceneSciezki(const WynikSciezki& wynik) {
-    // Kryteria z opisu:
-    // - wiecej lukow wagi 1 lepsze
-    // - wieksza czesc grafu uzyta lepsze
-    // - wiecej lukow wagi 2/3 gorsze
-    // - gdy brak 2/3, karzemy powtorki wierzcholkow
     double ocena = 0.0;
-    // Uwaga: zbyt duza waga kat1 powoduje zapadanie sie w cykle (malo unikalnych wierzcholkow).
-    // Dlatego wzmacniamy skladnik "uzyta czesc grafu" i zmniejszamy dominacje kat1.
     ocena += 150.0 * wynik.liczbaKrawedziKat1;
     ocena += 30.0 * wynik.unikalneWierzcholki;
     ocena -= 220.0 * wynik.liczbaKrawedziKat2;
@@ -156,6 +146,7 @@ double policzOceneSciezki(const WynikSciezki& wynik) {
     return ocena;
 }
 
+//MARK: - Dijkstra
 vector<int> dijkstraSciezka(
     const vector<vector<KrawedzGrafu>>& graf,
     int start,
@@ -164,10 +155,10 @@ vector<int> dijkstraSciezka(
     int delta_k
 ) {
     int n = graf.size();
-    const int INF = 1e9;
+    const int INF = 1000000000;
     vector<int> dist(n, INF);
     vector<int> prev(n, -1);
-    using Wezel = pair<int, int>; // (dist, v)
+    using Wezel = pair<int, int>; 
     priority_queue<Wezel, vector<Wezel>, greater<Wezel>> kolejka;
 
     dist[start] = 0;
@@ -181,10 +172,10 @@ vector<int> dijkstraSciezka(
         if (d != dist[v]) continue;
         if (v == cel) break;
 
-        for (const auto& e : graf[v]) {
-            // Koszt: kategoria (1/2/3) oraz preferencja na dluzszy overlap (mniejszy koszt)
+        for (int i = 0; i < graf[v].size(); i++) {
+            const KrawedzGrafu& e = graf[v][i];
             int kosztKategorii = (e.kategoriaWagi == 1) ? 1 : (e.kategoriaWagi == 2 ? 3 : 6);
-            int kosztOverlap = std::max(0, (k + delta_k) - e.overlap);
+            int kosztOverlap = max(0, (k + delta_k) - e.overlap);
             int koszt = kosztKategorii * 10 + kosztOverlap;
 
             if (dist[e.doWierzcholka] > dist[v] + koszt) {
@@ -267,6 +258,7 @@ void wyswietlanieMenu() {
     cout << "0. Wyjscie z programu" << endl;
     cout << "------------------------" << endl;
 }
+
 void wczytajZPliku() {
     cout << "Podaj nazwe pliku do wczytania: ";
     string nazwa;
@@ -314,7 +306,6 @@ void wczytajZPliku() {
         ustawParametryDomyslneDlaAktualnejSekwencji();
     }
 
-    // Pierwszy oligo zawsze jest prefiksem DNA; jego dlugosc nie zmienia sie w generatorze (i == 0).
     I.pierwszyOligo = (P.k > 0 && I.sekwencja.size() >= P.k)
         ? I.sekwencja.substr(0, P.k)
         : "";
@@ -357,6 +348,7 @@ int wczytajIntZDomyslna(const string& prompt, int domyslna) {
     return stoi(linia);
 }
 
+//MARK: - Generator instancji
 void pobierzParametryInstancji() {
     P.n = wczytajIntZDomyslna("Podaj n (dlugosc DNA, domyslnie 400): ", 400);
     P.k = wczytajIntZDomyslna("Podaj k (dlugosc oligo, domyslnie 8): ", 8);
@@ -533,7 +525,6 @@ void zastosujBledyWSpektrum() {
         }
 
         if (ileNeg > 0) {
-            // Chcemy zachowac pierwszy oligo (prefiks), zeby algorytm mial poprawny start.
             int indeksPierwszegoOligo = -1;
             if (!I.pierwszyOligo.empty()) {
                 for (int i = 0; i < m; ++i) {
@@ -661,7 +652,6 @@ void wygenerujSekwencje() {
     I.sekwencjaIstnieje = true;
 
     generujSpektrumBezBledow();
-    // Pierwszy oligo jest zawsze prefiksem DNA (i==0 ma dlugosc k).
     I.pierwszyOligo = (P.k > 0 && I.sekwencja.size() >= P.k)
         ? I.sekwencja.substr(0, P.k)
         : "";
@@ -881,6 +871,7 @@ pair<int, double> policzPokrycieSpektrum(const vector<string>& spektrumZBledami,
     return { znalezione, procent };
 }
 
+//MARK: - Algorytm naiwny
 void algorytmNaiwny() {
     if (!I.spektrumZBledamiIstnieje) {
         cout << "Brak spektrum do rekonstrukcji." << endl;
@@ -905,9 +896,6 @@ void algorytmNaiwny() {
     pair<int, double> wynikPokrycia = policzPokrycieSpektrum(I.spektrumZBledami, sekwencjaOdtworzona);
     cout << "Znalezione elementy spektrum: " << wynikPokrycia.first << "/" << I.spektrumZBledami.size()
     << " (" << wynikPokrycia.second << "% )" << endl;
-    pair<int, double> wynikPokryciaOryginalne = policzPokrycieSpektrum(I.spektrum, sekwencjaOdtworzona);
-    cout << "Znalezione elementy spektrum: " << wynikPokryciaOryginalne.first << "/" << I.spektrum.size()
-         << " (" << wynikPokryciaOryginalne.second << "% )" << endl;
 
     cout << "Czy zapisac wynik do pliku? (T/N): ";
     char decyzja;
@@ -952,8 +940,6 @@ WynikSciezki zbudujRozwiazanieMrowki(
     bool uzywajDijkstra
 ) {
     WynikSciezki wynik;
-    wynik.sciezkaWierzcholkow.clear();
-    wynik.uzyteKrawedzie.clear();
 
     int liczbaWierzcholkow = wierzcholki.size();
     vector<int> licznikOdwiedzin(liczbaWierzcholkow, 0);
@@ -969,7 +955,6 @@ WynikSciezki zbudujRozwiazanieMrowki(
     int krok = 0;
 
     while (wynik.sekwencja.size() < docelowaDlugosc && krok < limitKrokow) {
-        // Opcjonalny skok Dijkstry co pewna liczbe krokow.
         if (uzywajDijkstra && parametry.coIleKrokowDijkstra > 0 && krok > 0 && (krok % parametry.coIleKrokowDijkstra == 0)) {
             vector<int> nieOdwiedzone;
             nieOdwiedzone.reserve(liczbaWierzcholkow);
@@ -983,10 +968,9 @@ WynikSciezki zbudujRozwiazanieMrowki(
                 int cel = nieOdwiedzone[losujCel(generatorLosowy)];
                 vector<int> sciezka = dijkstraSciezka(graf, obecny, cel, P.k, P.delta_k);
                 if (sciezka.size() >= 2) {
-                    // Doklejamy sciezke Dijkstry.
-                    for (size_t idx = 1; idx < sciezka.size(); ++idx) {
-                        int nastepny = sciezka[idx];
-                        int overlap = policzNajdluzszyOverlapDowolny(wynik.sekwencja, wierzcholki[nastepny], P.k + P.delta_k);
+                    for (int index = 1; index < sciezka.size(); index++) {
+                        int nastepny = sciezka[index];
+                        int overlap = policzNajdluzszyOverlapDowolny(wynik.sekwencja, wierzcholki[nastepny]);
                         if (overlap >= wierzcholki[nastepny].size()) {
                             continue;
                         }
@@ -1009,41 +993,36 @@ WynikSciezki zbudujRozwiazanieMrowki(
                             break;
                         }
                     }
-                    ++krok;
+                    krok++;
                     continue;
                 }
             }
         }
 
-        // Standardowy krok ACO: wybierz nastepny wierzcholek z rozkladu.
         vector<pair<int, const KrawedzGrafu*>> kandydaci;
         kandydaci.reserve(graf[obecny].size());
-        for (const auto& e : graf[obecny]) {
+        for (int i = 0; i < graf[obecny].size(); i++) {
+            const KrawedzGrafu& e = graf[obecny][i];
             kandydaci.push_back({ e.doWierzcholka, &e });
         }
 
         if (!kandydaci.empty()) {
-            // Ogranicz liczbe kandydatow (dla wydajnosci): sortujemy po overlap desc.
-            sort(kandydaci.begin(), kandydaci.end(), [&](const auto& a, const auto& b) {
+            sort(kandydaci.begin(), kandydaci.end(), [&](const pair<int, const KrawedzGrafu*>& a, const pair<int, const KrawedzGrafu*>& b) {
                 return a.second->overlap > b.second->overlap;
             });
             if (parametry.limitKandydatow > 0 && kandydaci.size() > parametry.limitKandydatow) {
                 kandydaci.resize(parametry.limitKandydatow);
             }
 
-            // Jezeli istnieje rozwidlenie z oligo prawie-identycznymi (1-3 roznice),
-            // to warto je eksplorowac (typowy efekt bledow dodatnich).
             vector<char> maPodobnego(kandydaci.size(), 0);
-            if (kandydaci.size() >= 2) {
-                for (size_t i = 0; i < kandydaci.size(); ++i) {
-                    const string& si = wierzcholki[kandydaci[i].first];
-                    for (size_t j = i + 1; j < kandydaci.size(); ++j) {
-                        const string& sj = wierzcholki[kandydaci[j].first];
-                        int d = policzOdlegloscHammingaDoLimitu(si, sj, 3);
-                        if (d >= 1 && d <= 3) {
-                            maPodobnego[i] = 1;
-                            maPodobnego[j] = 1;
-                        }
+            for (int i = 0; i < kandydaci.size(); i++) {
+                const string& sekwencjai = wierzcholki[kandydaci[i].first];
+                for (int j = i + 1; j < kandydaci.size(); j++) {
+                    const string& sekwencjaj = wierzcholki[kandydaci[j].first];
+                    int d = policzOdlegloscHammingaDoLimitu(sekwencjai, sekwencjaj, 3);
+                    if (d >= 1 && d <= 3) {
+                        maPodobnego[i] = 1;
+                        maPodobnego[j] = 1;
                     }
                 }
             }
@@ -1051,17 +1030,17 @@ WynikSciezki zbudujRozwiazanieMrowki(
             vector<double> wagi;
             wagi.reserve(kandydaci.size());
             double suma = 0.0;
-            for (size_t idx = 0; idx < kandydaci.size(); ++idx) {
-                int nastepny = kandydaci[idx].first;
-                const KrawedzGrafu& e = *kandydaci[idx].second;
+            for (int index = 0; index < kandydaci.size(); index++) {
+                int nastepny = kandydaci[index].first;
+                const KrawedzGrafu& e = *kandydaci[index].second;
 
-                double tau = feromony[obecny][nastepny];
-                double eta = policzHeurystyke(e.overlap, e.kategoriaWagi, czyOdwiedzony[nastepny] != 0);
-                if (maPodobnego[idx]) {
-                    eta *= 1.35;
+                double iloscFeromonu = feromony[obecny][nastepny];
+                double atrakcyjnoscKrawedzi = policzHeurystyke(e.overlap, e.kategoriaWagi, czyOdwiedzony[nastepny] != 0);
+                if (maPodobnego[index]) {
+                    atrakcyjnoscKrawedzi *= 1.35;
                 }
-                double wartosc = pow(tau, parametry.alfa) * pow(eta, parametry.beta);
-                if (wartosc < 1e-12) wartosc = 1e-12;
+                double wartosc = pow(iloscFeromonu, parametry.alfa) * pow(atrakcyjnoscKrawedzi, parametry.beta);
+                if (wartosc < 0.000000000001) wartosc = 0.000000000001;
                 wagi.push_back(wartosc);
                 suma += wartosc;
             }
@@ -1098,10 +1077,9 @@ WynikSciezki zbudujRozwiazanieMrowki(
             licznikOdwiedzin[obecny]++;
             czyOdwiedzony[obecny] = 1;
         } else {
-            // Brak krawedzi z overlap>0: start nowego fragmentu (doklejamy jakis jeszcze nieodwiedzony oligo).
             int wybrany = -1;
             int najlepszaDlugosc = 0;
-            for (int v = 0; v < liczbaWierzcholkow; ++v) {
+            for (int v = 0; v < liczbaWierzcholkow; v++) {
                 if (czyOdwiedzony[v]) continue;
                 int dl = wierzcholki[v].size();
                 if (dl > najlepszaDlugosc) {
@@ -1110,7 +1088,6 @@ WynikSciezki zbudujRozwiazanieMrowki(
                 }
             }
             if (wybrany == -1) {
-                // Wszystko odwiedzone, bierzemy cokolwiek.
                 uniform_int_distribution<int> losujW(0, liczbaWierzcholkow - 1);
                 wybrany = losujW(generatorLosowy);
             }
@@ -1124,19 +1101,18 @@ WynikSciezki zbudujRozwiazanieMrowki(
             czyOdwiedzony[obecny] = 1;
         }
 
-        ++krok;
+        krok++;
     }
 
-    // Odetnij do docelowej dlugosci.
     if (wynik.sekwencja.size() > docelowaDlugosc) {
         wynik.sekwencja = wynik.sekwencja.substr(0, docelowaDlugosc);
     }
 
     int unikalne = 0;
     int powtorki = 0;
-    for (int v = 0; v < liczbaWierzcholkow; ++v) {
+    for (int v = 0; v < liczbaWierzcholkow; v++) {
         if (licznikOdwiedzin[v] > 0) {
-            ++unikalne;
+            unikalne++;
             if (licznikOdwiedzin[v] > 1) {
                 powtorki += (licznikOdwiedzin[v] - 1);
             }
@@ -1153,8 +1129,6 @@ WynikSciezki zbudujRozwiazanieNaiwneDokladnie(
     int docelowaDlugosc
 ) {
     WynikSciezki wynik;
-    wynik.sciezkaWierzcholkow.clear();
-    wynik.uzyteKrawedzie.clear();
 
     if (wierzcholki.empty() || docelowaDlugosc <= 0) {
         wynik.sekwencja = "";
@@ -1282,126 +1256,7 @@ WynikSciezki zbudujRozwiazanieNaiwneDokladnie(
     return wynik;
 }
 
-WynikSciezki zbudujRozwiazanieNaiwneDlaAco(
-    const vector<string>& wierzcholki,
-    const vector<vector<KrawedzGrafu>>& graf,
-    int indeksStartowy,
-    int docelowaDlugosc,
-    int k,
-    int delta_k
-) {
-    WynikSciezki wynik;
-    wynik.sciezkaWierzcholkow.clear();
-    wynik.uzyteKrawedzie.clear();
-
-    int liczbaWierzcholkow = wierzcholki.size();
-    vector<int> licznikOdwiedzin(liczbaWierzcholkow, 0);
-    vector<char> czyOdwiedzony(liczbaWierzcholkow, 0);
-
-    int obecny = indeksStartowy;
-    wynik.sciezkaWierzcholkow.push_back(obecny);
-    licznikOdwiedzin[obecny]++;
-    czyOdwiedzony[obecny] = 1;
-    wynik.sekwencja = wierzcholki[obecny];
-
-    int limitKrokow = docelowaDlugosc * 2;
-    int krok = 0;
-    int maxOverlap = k + delta_k;
-    int minOverlap = std::max(1, k - delta_k);
-
-    while (wynik.sekwencja.size() < docelowaDlugosc && krok < limitKrokow) {
-        int wybrany = -1;
-        int najlepszyOverlap = 0;
-        int najlepszaKategoria = 99;
-        bool najlepszyNieodwiedzony = false;
-
-        // Dwie fazy jak w naiwnym:
-        // 1) overlap w zakresie (k ± delta_k)
-        // 2) jesli brak - luzujemy i bierzemy dowolny overlap >= 1
-        for (int proba = 0; proba < 2 && wybrany == -1; proba++) {
-            for (const auto& e : graf[obecny]) {
-                int nastepny = e.doWierzcholka;
-                if (e.overlap <= 0) continue;
-                if (e.overlap >= wierzcholki[nastepny].size()) continue;
-
-                if (proba == 0) {
-                    if (e.overlap < minOverlap || e.overlap > maxOverlap) continue;
-                }
-
-                bool nieodwiedzony = (licznikOdwiedzin[nastepny] == 0);
-
-                bool lepszy = false;
-                if (e.overlap > najlepszyOverlap) lepszy = true;
-                else if (e.overlap == najlepszyOverlap) {
-                    if (nieodwiedzony && !najlepszyNieodwiedzony) lepszy = true;
-                    else if (nieodwiedzony == najlepszyNieodwiedzony && e.kategoriaWagi < najlepszaKategoria) lepszy = true;
-                }
-
-                if (lepszy) {
-                    najlepszyOverlap = e.overlap;
-                    najlepszaKategoria = e.kategoriaWagi;
-                    najlepszyNieodwiedzony = nieodwiedzony;
-                    wybrany = nastepny;
-                }
-            }
-        }
-
-        if (wybrany != -1 && najlepszyOverlap > 0) {
-            if (najlepszaKategoria == 1) wynik.liczbaKrawedziKat1++;
-            else if (najlepszaKategoria == 2) wynik.liczbaKrawedziKat2++;
-            else wynik.liczbaKrawedziKat3++;
-            wynik.sekwencja += wierzcholki[wybrany].substr(najlepszyOverlap);
-            wynik.uzyteKrawedzie.push_back({ obecny, wybrany });
-            obecny = wybrany;
-            wynik.sciezkaWierzcholkow.push_back(obecny);
-            licznikOdwiedzin[obecny]++;
-            czyOdwiedzony[obecny] = 1;
-        } else {
-            // Brak ruchu: tak jak w naiwnym - doklejamy nowy fragment (najdluzszy nieodwiedzony).
-            int indeksNajdluzszego = -1;
-            int najlepszaDlugosc = 0;
-            for (int v = 0; v < liczbaWierzcholkow; ++v) {
-                if (czyOdwiedzony[v]) continue;
-                int dl = wierzcholki[v].size();
-                if (dl > najlepszaDlugosc) {
-                    najlepszaDlugosc = dl;
-                    indeksNajdluzszego = v;
-                }
-            }
-            if (indeksNajdluzszego < 0) {
-                break;
-            }
-            wynik.liczbaKrawedziKat3++;
-            wynik.sekwencja += wierzcholki[indeksNajdluzszego];
-            wynik.uzyteKrawedzie.push_back({ obecny, indeksNajdluzszego });
-            obecny = indeksNajdluzszego;
-            wynik.sciezkaWierzcholkow.push_back(obecny);
-            licznikOdwiedzin[obecny]++;
-            czyOdwiedzony[obecny] = 1;
-        }
-
-        ++krok;
-    }
-
-    if (wynik.sekwencja.size() > docelowaDlugosc) {
-        wynik.sekwencja = wynik.sekwencja.substr(0, docelowaDlugosc);
-    }
-
-    int unikalne = 0;
-    int powtorki = 0;
-    for (int v = 0; v < liczbaWierzcholkow; v++) {
-        if (licznikOdwiedzin[v] > 0) {
-            ++unikalne;
-            if (licznikOdwiedzin[v] > 1) {
-                powtorki += (licznikOdwiedzin[v] - 1);
-            }
-        }
-    }
-    wynik.unikalneWierzcholki = unikalne;
-    wynik.powtorzeniaWierzcholkow = powtorki;
-    return wynik;
-}
-
+//MARK: Metaheurystyka
 void metaheurystyka() {
     ParametryMrowkowe parametry;
     cout << "--- METAHEURYSTYKA (Algorytm mrowkowy) ---" << endl;
@@ -1415,7 +1270,7 @@ void metaheurystyka() {
 
     if (parametry.liczbaIteracji < 1) parametry.liczbaIteracji = 1;
     if (parametry.liczbaMrowek < 1) parametry.liczbaMrowek = 1;
-    if (parametry.limitKandydatow < 5) parametry.limitKandydatow = 5;
+    if (parametry.limitKandydatow < 0) parametry.limitKandydatow = 5;
     if (parametry.procentMrowekDijkstra < 0) parametry.procentMrowekDijkstra = 0;
     if (parametry.procentMrowekDijkstra > 100) parametry.procentMrowekDijkstra = 100;
     if (parametry.coIleKrokowDijkstra < 1) parametry.coIleKrokowDijkstra = 50;
@@ -1432,16 +1287,14 @@ void metaheurystyka() {
     int index = znajdzIndeksWierzcholka(wierzcholki, I.pierwszyOligo);
     if (index >= 0) indeksStartowy = index;
 
-    int maxOverlap = P.k + P.delta_k;
-
     int liczbaWierzcholkow = wierzcholki.size();
     vector<vector<KrawedzGrafu>> graf(liczbaWierzcholkow);
     for (int i = 0; i < liczbaWierzcholkow; i++) {
         for (int j = 0; j < liczbaWierzcholkow; j++) {
             if (i == j) continue;
-            int overlap = policzNajdluzszyOverlapDowolny(wierzcholki[i], wierzcholki[j], maxOverlap);
+            int overlap = policzNajdluzszyOverlapDowolny(wierzcholki[i], wierzcholki[j]);
             if (overlap <= 0) continue;
-            if (overlap >= wierzcholki[j].size()) continue; // nic nie wniesie
+            if (overlap >= wierzcholki[j].size()) continue;
             KrawedzGrafu e;
             e.doWierzcholka = j;
             e.overlap = overlap;
@@ -1454,7 +1307,6 @@ void metaheurystyka() {
         });
     }
 
-    // Feromony jako macierz (dla prostoty). Inicjalizacja mala dodatnia.
     vector<vector<double>> feromony(liczbaWierzcholkow, vector<double>(liczbaWierzcholkow, 0.01));
 
     static random_device rd;
@@ -1464,21 +1316,18 @@ void metaheurystyka() {
     WynikSciezki najlepszyGlobalny;
     double najlepszaOcenaGlobalna = -1e18;
 
-    // Pierwsza mrowka ma byc dokladnie algorytmem naiwnym (ta sama logika wyboru oligo).
-    // Liczymy raz i potem tylko kopiujemy do iteracji.
     WynikSciezki bazowyNaiwny = zbudujRozwiazanieNaiwneDokladnie(I, wierzcholki, P.n);
     najlepszyGlobalny = bazowyNaiwny;
     najlepszaOcenaGlobalna = policzOceneSciezki(bazowyNaiwny);
     auto najlepszePokrycieGlobalne = policzPokrycieSpektrum(I.spektrumZBledami, najlepszyGlobalny.sekwencja);
 
-    for (int iter = 0; iter < parametry.liczbaIteracji; ++iter) {
+    for (int iter = 0; iter < parametry.liczbaIteracji; iter++) {
         WynikSciezki najlepszyIteracji;
-        double najlepszaOcenaIteracji = -1e18;
+        double najlepszaOcenaIteracji = -100000;
 
-        for (int mrowka = 0; mrowka < parametry.liczbaMrowek; ++mrowka) {
+        for (int mrowka = 0; mrowka < parametry.liczbaMrowek; mrowka++) {
             WynikSciezki wynik;
             if (mrowka == 0) {
-                // Pierwsza mrowka: dokladnie algorytm naiwny.
                 wynik = bazowyNaiwny;
             } else {
                 bool uzywajDijkstra = (parametry.procentMrowekDijkstra > 0) && (losujProcent(generatorLosowy) < parametry.procentMrowekDijkstra);
@@ -1500,8 +1349,7 @@ void metaheurystyka() {
                 najlepszaOcenaIteracji = ocena;
                 najlepszyIteracji = wynik;
             }
-            // Wynik koncowy wybieramy glownie po pokryciu spektrum (bez uzycia oryginalnego DNA),
-            // a ocena jest tylko tie-breakerem.
+
             if (pokrycie.first > najlepszePokrycieGlobalne.first ||
                 (pokrycie.first == najlepszePokrycieGlobalne.first && ocena > najlepszaOcenaGlobalna)) {
                 najlepszePokrycieGlobalne = pokrycie;
@@ -1510,19 +1358,18 @@ void metaheurystyka() {
             }
         }
 
-        // Parowanie.
         double wspolczynnikParowania = 1.0 - parametry.parowanie;
-        for (int i = 0; i < liczbaWierzcholkow; ++i) {
-            for (int j = 0; j < liczbaWierzcholkow; ++j) {
+        for (int i = 0; i < liczbaWierzcholkow; i++) {
+            for (int j = 0; j < liczbaWierzcholkow; j++) {
                 feromony[i][j] *= wspolczynnikParowania;
-                if (feromony[i][j] < 1e-6) feromony[i][j] = 1e-6;
+                if (feromony[i][j] < 0.000001) feromony[i][j] = 0.000001;
             }
         }
 
-        // Depozyt feromonu na najlepszej sciezce iteracji.
-        double ocenaDoWzmocnienia = std::max(1.0, najlepszaOcenaIteracji);
+        double ocenaDoWzmocnienia = max(1.0, najlepszaOcenaIteracji);
         double depozyt = parametry.q * (ocenaDoWzmocnienia / (najlepszyIteracji.uzyteKrawedzie.size() + 1.0));
-        for (const auto& e : najlepszyIteracji.uzyteKrawedzie) {
+        for ( int i= 0; i < najlepszyIteracji.uzyteKrawedzie.size(); i++) {
+            const pair<int, int>& e = najlepszyIteracji.uzyteKrawedzie[i];
             feromony[e.first][e.second] += depozyt;
         }
 
@@ -1573,6 +1420,7 @@ int main() {
     char wybor = '1';
     while (wybor != '0') {
         wyswietlanieMenu();
+
         cout << "Wybor: ";
         cin >> wybor;
 
