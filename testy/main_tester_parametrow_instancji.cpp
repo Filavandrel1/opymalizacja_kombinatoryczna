@@ -11,7 +11,10 @@
 #include <queue>
 #include <functional>
 #include <cmath>
+#include <unordered_map>
 using namespace std;
+
+#include <filesystem>
 
 struct Parametry {
     int n = 0; 
@@ -52,6 +55,23 @@ struct ParametryMrowkowe {
     int coIleKrokowDijkstra = 50;
 };
 
+static bool createParentDirs(const string& filePath) {
+    try {
+        std::filesystem::path p(filePath);
+        if (p.has_parent_path()) {
+            std::filesystem::create_directories(p.parent_path());
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+static string joinPath(const string& a, const string& b) {
+    std::filesystem::path p = std::filesystem::path(a) / b;
+    return p.string();
+}
+
 struct WynikSciezki {
     string sekwencja;
     vector<int> sciezkaWierzcholkow;
@@ -63,6 +83,23 @@ struct WynikSciezki {
     int powtorzeniaWierzcholkow = 0;
 };
 
+WynikSciezki zbudujRozwiazanieMrowki(
+    const vector<string>& wierzcholki,
+    const vector<vector<KrawedzGrafu>>& graf,
+    vector<vector<double>>& feromony,
+    int indeksStartowy,
+    int docelowaDlugosc,
+    const ParametryMrowkowe& parametry,
+    mt19937& generatorLosowy,
+    bool uzywajDijkstra
+);
+
+WynikSciezki zbudujRozwiazanieNaiwneDokladnie(
+    const Instancja& instancja,
+    const vector<string>& wierzcholki,
+    int docelowaDlugosc
+);
+
 const char NUKLEOTYDY[4] = { 'A', 'C', 'G', 'T' };
 
 void generujSpektrumBezBledow();
@@ -71,6 +108,9 @@ int policzNajdluzszyOverlapOgraniczony(const string& aktualnaSekwencja, const st
 string zlozSekwencjeNaiwnieZachlannie(const Instancja& instancja);
 int policzOdlegloscLevenshteina(const string& sekwencjaPrawdziwa, const string& sekwencjaOdtworzona);
 pair<int, double> policzPokrycieSpektrum(const vector<string>& spektrumZBledami, const string& sekwencjaOdtworzona);
+
+// Tryb automatycznych testow (batch) - prototyp wczesniej, definicja dalej w pliku
+static bool wczytajInstancjeZPlikuBezInterakcji(const string& nazwaPliku);
 
 int znajdzIndeksWierzcholka(const vector<string>& wierzcholki, const string& oligo) {
     for (int i = 0; i < wierzcholki.size(); i++) {
@@ -346,6 +386,487 @@ int wczytajIntZDomyslna(const string& prompt, int domyslna) {
         return domyslna;
     }
     return stoi(linia);
+}
+
+static bool tryGetArgValue(int argc, char** argv, const string& flag, string& outValue) {
+    for (int i = 1; i < argc; ++i) {
+        if (argv[i] == flag) {
+            if (i + 1 < argc) {
+                outValue = argv[i + 1];
+                return true;
+            }
+            return false;
+        }
+    }
+    return false;
+}
+
+static bool tryGetArgInt(int argc, char** argv, const string& flag, int& outValue) {
+    string s;
+    if (!tryGetArgValue(argc, argv, flag, s)) return false;
+    try {
+        outValue = stoi(s);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+static bool hasFlag(int argc, char** argv, const string& flag) {
+    for (int i = 1; i < argc; ++i) {
+        if (argv[i] == flag) return true;
+    }
+    return false;
+}
+
+static void wygenerujInstancjeDeltaKDoFolderu(
+    const string& outputDir,
+    int n,
+    int k,
+    const vector<int>& deltyK,
+    int instancjiNaDelta,
+    int lNeg,
+    int lPoz,
+    bool repAllowed,
+    bool probablePositive,
+    unsigned int seedBazowy
+) {
+    srand(seedBazowy);
+
+    int index = 1;
+    for (int deltaK : deltyK) {
+        for (int t = 0; t < instancjiNaDelta; ++t) {
+            // ustaw parametry instancji
+            P.n = n;
+            P.k = k;
+            P.delta_k = deltaK;
+            P.l_neg = lNeg;
+            P.l_poz = lPoz;
+            P.repAllowed = repAllowed;
+            P.probablePositive = probablePositive;
+
+            // wygeneruj DNA + spektrum z bledami
+            I.sekwencja.clear();
+            for (int i = 0; i < P.n; ++i) {
+                I.sekwencja.push_back(NUKLEOTYDY[rand() % 4]);
+            }
+            I.sekwencjaIstnieje = true;
+
+            generujSpektrumBezBledow();
+            I.pierwszyOligo = (P.k > 0 && I.sekwencja.size() >= (size_t)P.k)
+                ? I.sekwencja.substr(0, P.k)
+                : "";
+            zastosujBledyWSpektrum();
+
+            // zapisz
+            string fileName = string("in") + to_string(index) + ".txt";
+            string filePath = joinPath(outputDir, fileName);
+            if (!createParentDirs(filePath)) {
+                cout << "Blad: nie mozna utworzyc katalogow dla: " << filePath << endl;
+                return;
+            }
+            ofstream out(filePath);
+            if (!out) {
+                cout << "Blad: nie mozna otworzyc pliku do zapisu: " << filePath << endl;
+                return;
+            }
+            out << I.sekwencja << '\n';
+            out << P.n << ' ' << P.k << ' ' << P.delta_k << ' ' << P.l_neg << ' ' << P.l_poz << ' '
+                << (P.repAllowed ? 1 : 0) << ' ' << (P.probablePositive ? 1 : 0) << '\n';
+            out << I.spektrumZBledami.size() << '\n';
+            for (const auto& oligo : I.spektrumZBledami) {
+                out << oligo << '\n';
+            }
+
+            ++index;
+        }
+    }
+}
+
+static void wygenerujInstancjeKDoFolderu(
+    const string& outputDir,
+    int n,
+    const vector<int>& wartosciK,
+    int instancjiNaK,
+    int deltaK,
+    int lNeg,
+    int lPoz,
+    bool repAllowed,
+    bool probablePositive,
+    unsigned int seedBazowy
+) {
+    srand(seedBazowy);
+
+    int index = 1;
+    for (int k : wartosciK) {
+        for (int t = 0; t < instancjiNaK; ++t) {
+            P.n = n;
+            P.k = k;
+            P.delta_k = deltaK;
+            P.l_neg = lNeg;
+            P.l_poz = lPoz;
+            P.repAllowed = repAllowed;
+            P.probablePositive = probablePositive;
+
+            I.sekwencja.clear();
+            for (int i = 0; i < P.n; ++i) {
+                I.sekwencja.push_back(NUKLEOTYDY[rand() % 4]);
+            }
+            I.sekwencjaIstnieje = true;
+
+            generujSpektrumBezBledow();
+            I.pierwszyOligo = (P.k > 0 && I.sekwencja.size() >= (size_t)P.k)
+                ? I.sekwencja.substr(0, P.k)
+                : "";
+            zastosujBledyWSpektrum();
+
+            string fileName = string("in") + to_string(index) + ".txt";
+            string filePath = joinPath(outputDir, fileName);
+            if (!createParentDirs(filePath)) {
+                cout << "Blad: nie mozna utworzyc katalogow dla: " << filePath << endl;
+                return;
+            }
+            ofstream out(filePath);
+            if (!out) {
+                cout << "Blad: nie mozna otworzyc pliku do zapisu: " << filePath << endl;
+                return;
+            }
+            out << I.sekwencja << '\n';
+            out << P.n << ' ' << P.k << ' ' << P.delta_k << ' ' << P.l_neg << ' ' << P.l_poz << ' '
+                << (P.repAllowed ? 1 : 0) << ' ' << (P.probablePositive ? 1 : 0) << '\n';
+            out << I.spektrumZBledami.size() << '\n';
+            for (const auto& oligo : I.spektrumZBledami) {
+                out << oligo << '\n';
+            }
+
+            ++index;
+        }
+    }
+}
+
+// Uruchamia metaheurystyke dla aktualnie wczytanej instancji (w oparciu o globalne I/P)
+// i zwraca metryki: (levenshtein, pokrycie% spektrum z bledami)
+static pair<int, double> uruchomAlgorytmIZwrocMetryki(
+    const ParametryMrowkowe& parametry,
+    unsigned int seed
+);
+
+static pair<int, double> uruchomAlgorytmIZwrocMetryki(
+    const ParametryMrowkowe& parametry,
+    unsigned int seed
+) {
+    // wierzcholki = unikalne oligo z spektrum z bledami
+    vector<string> wierzcholki = I.spektrumZBledami;
+    sort(wierzcholki.begin(), wierzcholki.end());
+    wierzcholki.erase(unique(wierzcholki.begin(), wierzcholki.end()), wierzcholki.end());
+    if (wierzcholki.empty()) {
+        return {0, 0.0};
+    }
+
+    int indeksStartowy = 0;
+    int idxStart = znajdzIndeksWierzcholka(wierzcholki, I.pierwszyOligo);
+    if (idxStart >= 0) indeksStartowy = idxStart;
+
+    int liczbaWierzcholkow = (int)wierzcholki.size();
+    vector<vector<KrawedzGrafu>> graf(liczbaWierzcholkow);
+    for (int i = 0; i < liczbaWierzcholkow; i++) {
+        for (int j = 0; j < liczbaWierzcholkow; j++) {
+            if (i == j) continue;
+            int overlap = policzNajdluzszyOverlapDowolny(wierzcholki[i], wierzcholki[j]);
+            if (overlap <= 0) continue;
+            if (overlap >= (int)wierzcholki[j].size()) continue;
+            KrawedzGrafu e;
+            e.doWierzcholka = j;
+            e.overlap = overlap;
+            e.kategoriaWagi = policzKategorieKrawedzi(overlap, P.k, P.delta_k);
+            graf[i].push_back(e);
+        }
+        sort(graf[i].begin(), graf[i].end(), [](const KrawedzGrafu& a, const KrawedzGrafu& b) {
+            if (a.kategoriaWagi != b.kategoriaWagi) return a.kategoriaWagi < b.kategoriaWagi;
+            return a.overlap > b.overlap;
+        });
+    }
+
+    vector<vector<double>> feromony(liczbaWierzcholkow, vector<double>(liczbaWierzcholkow, 0.01));
+
+    mt19937 generatorLosowy(seed);
+    uniform_int_distribution<int> losujProcent(0, 99);
+
+    // baseline: rozwiazanie naiwne jako punkt startowy/seed globalnego najlepszego
+    WynikSciezki najlepszyGlobalny;
+    double najlepszaOcenaGlobalna = -1e18;
+    WynikSciezki bazowyNaiwny = zbudujRozwiazanieNaiwneDokladnie(I, wierzcholki, P.n);
+    najlepszyGlobalny = bazowyNaiwny;
+    najlepszaOcenaGlobalna = policzOceneSciezki(bazowyNaiwny);
+    auto najlepszePokrycieGlobalne = policzPokrycieSpektrum(I.spektrumZBledami, najlepszyGlobalny.sekwencja);
+
+    for (int iter = 0; iter < parametry.liczbaIteracji; iter++) {
+        WynikSciezki najlepszyIteracji;
+        double najlepszaOcenaIteracji = -1e18;
+
+        for (int mrowka = 0; mrowka < parametry.liczbaMrowek; mrowka++) {
+            bool uzywajDijkstra = (parametry.procentMrowekDijkstra > 0) && (losujProcent(generatorLosowy) < parametry.procentMrowekDijkstra);
+            WynikSciezki wynik = zbudujRozwiazanieMrowki(
+                wierzcholki,
+                graf,
+                feromony,
+                indeksStartowy,
+                P.n,
+                parametry,
+                generatorLosowy,
+                uzywajDijkstra
+            );
+
+            // fallback: jakby mrowka wyszla pusta
+            if (wynik.sekwencja.empty()) {
+                wynik = bazowyNaiwny;
+            }
+
+            double ocena = policzOceneSciezki(wynik);
+            auto pokrycie = policzPokrycieSpektrum(I.spektrumZBledami, wynik.sekwencja);
+
+            if (ocena > najlepszaOcenaIteracji) {
+                najlepszaOcenaIteracji = ocena;
+                najlepszyIteracji = wynik;
+            }
+
+            // zgodnie z ustaleniem: najpierw ocena, potem pokrycie
+            if (ocena > najlepszaOcenaGlobalna ||
+                (ocena == najlepszaOcenaGlobalna && pokrycie.first > najlepszePokrycieGlobalne.first)) {
+                najlepszaOcenaGlobalna = ocena;
+                najlepszePokrycieGlobalne = pokrycie;
+                najlepszyGlobalny = wynik;
+            }
+        }
+
+        double wspolczynnikParowania = 1.0 - parametry.parowanie;
+        for (int i = 0; i < liczbaWierzcholkow; i++) {
+            for (int j = 0; j < liczbaWierzcholkow; j++) {
+                feromony[i][j] *= wspolczynnikParowania;
+                if (feromony[i][j] < 0.000001) feromony[i][j] = 0.000001;
+            }
+        }
+
+        if (najlepszyIteracji.uzyteKrawedzie.empty()) {
+            // nic nie wzmacniamy
+            continue;
+        }
+
+        double ocenaDoWzmocnienia = max(1.0, najlepszaOcenaIteracji);
+        double depozyt = parametry.q * (ocenaDoWzmocnienia / (najlepszyIteracji.uzyteKrawedzie.size() + 1.0));
+        for (size_t i = 0; i < najlepszyIteracji.uzyteKrawedzie.size(); i++) {
+            const pair<int, int>& e = najlepszyIteracji.uzyteKrawedzie[i];
+            if (e.first >= 0 && e.first < liczbaWierzcholkow && e.second >= 0 && e.second < liczbaWierzcholkow) {
+                feromony[e.first][e.second] += depozyt;
+            }
+        }
+    }
+
+    string sekwencjaOdtworzona = najlepszyGlobalny.sekwencja;
+    if ((int)sekwencjaOdtworzona.size() > P.n) {
+        sekwencjaOdtworzona = sekwencjaOdtworzona.substr(0, P.n);
+    }
+
+    int lev = 0;
+    if (I.sekwencjaIstnieje) {
+        lev = policzOdlegloscLevenshteina(I.sekwencja, sekwencjaOdtworzona);
+    }
+
+    auto cov = policzPokrycieSpektrum(I.spektrumZBledami, sekwencjaOdtworzona);
+    return {lev, cov.second};
+}
+
+static void testParametrowInstancjiDeltaK(
+    const string& folder,
+    const vector<int>& deltyK,
+    int instancjiNaDelta,
+    int liczbaSeedow,
+    unsigned int seedStart
+) {
+    cout << "=== TESTY PARAMETROW INSTANCJI: delta_k ===" << endl;
+    cout << "Folder: " << folder << endl;
+
+    ParametryMrowkowe parametry;
+    parametry.liczbaIteracji = 100;
+    parametry.liczbaMrowek = 50;
+    parametry.limitKandydatow = 2;
+    parametry.procentMrowekDijkstra = 25;
+    parametry.coIleKrokowDijkstra = 50;
+
+    struct Agg {
+        long long cnt = 0;
+        double sumLev = 0.0;
+        double sumCov = 0.0;
+    };
+
+    unordered_map<int, Agg> perDelta;
+    Agg overall;
+
+    int globalIndex = 1;
+    for (int deltaK : deltyK) {
+        for (int t = 0; t < instancjiNaDelta; ++t) {
+            string fileName = string("in") + to_string(globalIndex) + ".txt";
+            string path = joinPath(folder, fileName);
+
+            // 10 seedow: start 243, kazdy kolejny = 5 * obecny
+            unsigned int seed = seedStart;
+            for (int s = 0; s < liczbaSeedow; ++s) {
+                // wczytaj instancje
+                {
+                    ifstream in(path);
+                    if (!in) {
+                        cout << "Blad: nie mozna otworzyc instancji: " << path << endl;
+                        return;
+                    }
+
+                    I.sekwencja.clear();
+                    I.spektrum.clear();
+                    I.spektrumZBledami.clear();
+                    I.sekwencjaIstnieje = false;
+                    I.spektrumIstnieje = false;
+                    I.spektrumZBledamiIstnieje = false;
+
+                    string dnaLinia;
+                    in >> ws;
+                    if (!getline(in, dnaLinia) || dnaLinia.empty()) {
+                        cout << "Blad formatu instancji: " << path << endl;
+                        return;
+                    }
+                    I.sekwencja = dnaLinia;
+                    I.sekwencjaIstnieje = true;
+
+                    string paramLinia;
+                    if (getline(in, paramLinia) && !paramLinia.empty()) {
+                        istringstream iss(paramLinia);
+                        int n, k, d, lneg, lpoz, rep, prob;
+                        if (iss >> n >> k >> d >> lneg >> lpoz >> rep >> prob) {
+                            P.n = n;
+                            P.k = k;
+                            P.delta_k = d;
+                            P.l_neg = lneg;
+                            P.l_poz = lpoz;
+                            P.repAllowed = (rep != 0);
+                            P.probablePositive = (prob != 0);
+                        }
+                    }
+
+                    I.pierwszyOligo = (P.k > 0 && I.sekwencja.size() >= (size_t)P.k)
+                        ? I.sekwencja.substr(0, P.k)
+                        : "";
+
+                    generujSpektrumBezBledow();
+
+                    int liczbaOligoZPliku = 0;
+                    if (in >> liczbaOligoZPliku && liczbaOligoZPliku > 0) {
+                        string tmp;
+                        getline(in, tmp);
+                        for (int i = 0; i < liczbaOligoZPliku; ++i) {
+                            string oligo;
+                            if (!getline(in, oligo)) break;
+                            if (!oligo.empty()) {
+                                I.spektrumZBledami.push_back(oligo);
+                            }
+                        }
+                        sort(I.spektrumZBledami.begin(), I.spektrumZBledami.end());
+                        I.spektrumZBledamiIstnieje = !I.spektrumZBledami.empty();
+                    }
+                }
+
+                auto [lev, cov] = uruchomAlgorytmIZwrocMetryki(parametry, seed);
+                perDelta[deltaK].cnt++;
+                perDelta[deltaK].sumLev += lev;
+                perDelta[deltaK].sumCov += cov;
+
+                overall.cnt++;
+                overall.sumLev += lev;
+                overall.sumCov += cov;
+
+                seed = seed * 5u;
+            }
+
+            ++globalIndex;
+        }
+    }
+
+    cout << "\n--- PODSUMOWANIE (srednie po 10 instancji * 10 seedow) ---" << endl;
+    cout << "delta_k\tsrednia_levenshtein\tsrednie_pokrycie_z_bledami[%]" << endl;
+    for (int deltaK : deltyK) {
+        const Agg& a = perDelta[deltaK];
+        double avgLev = a.cnt ? (a.sumLev / a.cnt) : 0.0;
+        double avgCov = a.cnt ? (a.sumCov / a.cnt) : 0.0;
+        cout << deltaK << '\t' << avgLev << '\t' << avgCov << endl;
+    }
+
+    double overallLev = overall.cnt ? (overall.sumLev / overall.cnt) : 0.0;
+    double overallCov = overall.cnt ? (overall.sumCov / overall.cnt) : 0.0;
+    cout << "\nRAZEM\t" << overallLev << "\t" << overallCov << endl;
+}
+
+static void testParametrowInstancjiK(
+    const string& folder,
+    const vector<int>& wartosciK,
+    int instancjiNaK,
+    int liczbaSeedow,
+    unsigned int seedStart
+) {
+    cout << "=== TESTY PARAMETROW INSTANCJI: k ===" << endl;
+    cout << "Folder: " << folder << endl;
+
+    ParametryMrowkowe parametry;
+    parametry.liczbaIteracji = 100;
+    parametry.liczbaMrowek = 50;
+    parametry.limitKandydatow = 2;
+    parametry.procentMrowekDijkstra = 25;
+    parametry.coIleKrokowDijkstra = 50;
+
+    struct Agg {
+        long long cnt = 0;
+        double sumLev = 0.0;
+        double sumCov = 0.0;
+    };
+
+    unordered_map<int, Agg> perK;
+    Agg overall;
+
+    int globalIndex = 1;
+    for (int k : wartosciK) {
+        for (int t = 0; t < instancjiNaK; ++t) {
+            string fileName = string("in") + to_string(globalIndex) + ".txt";
+            string path = joinPath(folder, fileName);
+
+            unsigned int seed = seedStart;
+            for (int s = 0; s < liczbaSeedow; ++s) {
+                if (!wczytajInstancjeZPlikuBezInterakcji(path)) {
+                    cout << "Blad: nie mozna wczytac instancji: " << path << endl;
+                    return;
+                }
+
+                auto [lev, cov] = uruchomAlgorytmIZwrocMetryki(parametry, seed);
+                perK[k].cnt++;
+                perK[k].sumLev += lev;
+                perK[k].sumCov += cov;
+                overall.cnt++;
+                overall.sumLev += lev;
+                overall.sumCov += cov;
+                seed = seed * 5u;
+            }
+
+            ++globalIndex;
+        }
+    }
+
+    cout << "\n--- PODSUMOWANIE (srednie po 10 instancji * 10 seedow) ---" << endl;
+    cout << "k\tsrednia_levenshtein\tsrednie_pokrycie_z_bledami[%]" << endl;
+    for (int k : wartosciK) {
+        const Agg& a = perK[k];
+        double avgLev = a.cnt ? (a.sumLev / a.cnt) : 0.0;
+        double avgCov = a.cnt ? (a.sumCov / a.cnt) : 0.0;
+        cout << k << '\t' << avgLev << '\t' << avgCov << endl;
+    }
+
+    double overallLev = overall.cnt ? (overall.sumLev / overall.cnt) : 0.0;
+    double overallCov = overall.cnt ? (overall.sumCov / overall.cnt) : 0.0;
+    cout << "\nRAZEM\t" << overallLev << "\t" << overallCov << endl;
 }
 
 //MARK: - Generator instancji
@@ -1326,21 +1847,20 @@ void metaheurystyka() {
         double najlepszaOcenaIteracji = -100000;
 
         for (int mrowka = 0; mrowka < parametry.liczbaMrowek; mrowka++) {
-            WynikSciezki wynik;
-            if (mrowka == 0) {
+            bool uzywajDijkstra = (parametry.procentMrowekDijkstra > 0) && (losujProcent(generatorLosowy) < parametry.procentMrowekDijkstra);
+            WynikSciezki wynik = zbudujRozwiazanieMrowki(
+                wierzcholki,
+                graf,
+                feromony,
+                indeksStartowy,
+                P.n,
+                parametry,
+                generatorLosowy,
+                uzywajDijkstra
+            );
+
+            if (wynik.sekwencja.empty()) {
                 wynik = bazowyNaiwny;
-            } else {
-                bool uzywajDijkstra = (parametry.procentMrowekDijkstra > 0) && (losujProcent(generatorLosowy) < parametry.procentMrowekDijkstra);
-                wynik = zbudujRozwiazanieMrowki(
-                    wierzcholki,
-                    graf,
-                    feromony,
-                    indeksStartowy,
-                    P.n,
-                    parametry,
-                    generatorLosowy,
-                    uzywajDijkstra
-                );
             }
 
             double ocena = policzOceneSciezki(wynik);
@@ -1350,10 +1870,10 @@ void metaheurystyka() {
                 najlepszyIteracji = wynik;
             }
 
-            if (pokrycie.first > najlepszePokrycieGlobalne.first ||
-                (pokrycie.first == najlepszePokrycieGlobalne.first && ocena > najlepszaOcenaGlobalna)) {
-                najlepszePokrycieGlobalne = pokrycie;
+            if (ocena > najlepszaOcenaGlobalna ||
+                (ocena == najlepszaOcenaGlobalna && pokrycie.first > najlepszePokrycieGlobalne.first)) {
                 najlepszaOcenaGlobalna = ocena;
+                najlepszePokrycieGlobalne = pokrycie;
                 najlepszyGlobalny = wynik;
             }
         }
@@ -1415,8 +1935,593 @@ void metaheurystyka() {
     }
 }
 
-int main() {
+// ----------------- Tryb automatycznych testow (batch) -----------------
+static bool wczytajInstancjeZPlikuBezInterakcji(const string& nazwaPliku) {
+    ifstream in(nazwaPliku);
+    if (!in) {
+        return false;
+    }
+
+    I.sekwencja.clear();
+
+    string dnaLinia;
+    in >> ws;
+    if (!getline(in, dnaLinia) || dnaLinia.empty()) {
+        return false;
+    }
+
+    I.sekwencja = dnaLinia;
+    I.sekwencjaIstnieje = true;
+
+    string paramLinia;
+    if (getline(in, paramLinia) && !paramLinia.empty()) {
+        istringstream iss(paramLinia);
+        int n, k, d, lneg, lpoz, rep, prob;
+        if (iss >> n >> k >> d >> lneg >> lpoz >> rep >> prob) {
+            P.n = n;
+            P.k = k;
+            P.delta_k = d;
+            P.l_neg = lneg;
+            P.l_poz = lpoz;
+            P.repAllowed = (rep != 0);
+            P.probablePositive = (prob != 0);
+        } else {
+            ustawParametryDomyslneDlaAktualnejSekwencji();
+        }
+    } else {
+        ustawParametryDomyslneDlaAktualnejSekwencji();
+    }
+
+    I.pierwszyOligo = (P.k > 0 && I.sekwencja.size() >= static_cast<size_t>(P.k))
+        ? I.sekwencja.substr(0, P.k)
+        : "";
+
+    generujSpektrumBezBledow();
+    I.spektrumZBledami.clear();
+    I.spektrumZBledamiIstnieje = false;
+
+    int liczbaOligoZPliku = 0;
+    if (in >> liczbaOligoZPliku && liczbaOligoZPliku > 0) {
+        string usuniecieZnaku;
+        getline(in, usuniecieZnaku);
+        for (int i = 0; i < liczbaOligoZPliku; ++i) {
+            string oligo;
+            if (!getline(in, oligo)) break;
+            if (!oligo.empty()) {
+                I.spektrumZBledami.push_back(oligo);
+            }
+        }
+        sort(I.spektrumZBledami.begin(), I.spektrumZBledami.end());
+        I.spektrumZBledamiIstnieje = !I.spektrumZBledami.empty();
+    }
+
+    if (!I.spektrumZBledamiIstnieje) {
+        zastosujBledyWSpektrum();
+    }
+
+    return I.spektrumZBledamiIstnieje;
+}
+
+static bool przygotujInstancjeDlaBatch(const string& nazwaPliku, unsigned seed, bool wczytujZPliku) {
+    srand(static_cast<unsigned>(seed));
+
+    if (wczytujZPliku) {
+        return wczytajInstancjeZPlikuBezInterakcji(nazwaPliku);
+    }
+
+    return false;
+}
+
+static int uruchomBatchZPliku(const string& nazwaPliku, unsigned seed) {
+    ParametryMrowkowe parametry;
+    parametry.liczbaIteracji = 100;
+    parametry.liczbaMrowek = 50;
+    parametry.limitKandydatow = 2;
+    parametry.procentMrowekDijkstra = 20;
+    parametry.coIleKrokowDijkstra = 50;
+
+    parametry.alfa = 1.2;
+    parametry.beta = 1.6;
+    parametry.parowanie = 0.1;
+    // Test wpływu procentu użycia Dijkstry na jakość wyniku.
+    // Liczbę mrówek i iteracji trzymamy stałe, a limit kandydatów ustawiamy na 2.
+    parametry.liczbaMrowek = 50;
+    parametry.liczbaIteracji = 100;
+    parametry.limitKandydatow = 2;
+    const vector<int> procentyDijkstry = { 0, 5, 10, 15, 20, 25 };
+    const int liczbaProb = 3;
+
+    const bool bazaZPliku = true;
+    if (!przygotujInstancjeDlaBatch(nazwaPliku, seed, bazaZPliku)) {
+        cerr << "Nie udalo sie przygotowac instancji (seed=" << seed << ").\n";
+        return 2;
+    }
+
+    vector<string> wierzcholki = I.spektrumZBledami;
+    wierzcholki.erase(unique(wierzcholki.begin(), wierzcholki.end()), wierzcholki.end());
+    if (wierzcholki.empty()) {
+        cerr << "Spektrum jest puste.\n";
+        return 3;
+    }
+
+    int indeksStartowy = 0;
+    int index = znajdzIndeksWierzcholka(wierzcholki, I.pierwszyOligo);
+    if (index >= 0) indeksStartowy = index;
+
+    int liczbaWierzcholkow = static_cast<int>(wierzcholki.size());
+    vector<vector<KrawedzGrafu>> graf(liczbaWierzcholkow);
+    for (int i = 0; i < liczbaWierzcholkow; i++) {
+        for (int j = 0; j < liczbaWierzcholkow; j++) {
+            if (i == j) continue;
+            int overlap = policzNajdluzszyOverlapDowolny(wierzcholki[i], wierzcholki[j]);
+            if (overlap <= 0) continue;
+            if (overlap >= static_cast<int>(wierzcholki[j].size())) continue;
+            KrawedzGrafu e;
+            e.doWierzcholka = j;
+            e.overlap = overlap;
+            e.kategoriaWagi = policzKategorieKrawedzi(overlap, P.k, P.delta_k);
+            graf[i].push_back(e);
+        }
+        sort(graf[i].begin(), graf[i].end(), [](const KrawedzGrafu& a, const KrawedzGrafu& b) {
+            if (a.kategoriaWagi != b.kategoriaWagi) return a.kategoriaWagi < b.kategoriaWagi;
+            return a.overlap > b.overlap;
+        });
+    }
+
+    cout << "procent_mrowek_dijkstra\tsrednie_pokrycie_z_bledami_procent\tzgodnosc_prawdziwe_spektrum_procent\tsredni_levenshtein" << endl;
+    for (size_t idx = 0; idx < procentyDijkstry.size(); ++idx) {
+        const int procentDijkstry = procentyDijkstry[idx];
+        parametry.procentMrowekDijkstra = procentDijkstry;
+        double sumaPokrycZBledami = 0.0;
+        double sumaZgodnosciPrawdziwe = 0.0;
+        double sumaLevenshteina = 0.0;
+
+        mt19937 generatorLosowy(seed);
+        uniform_int_distribution<int> losujProcent(0, 99);
+
+        for (int proba = 0; proba < liczbaProb; ++proba) {
+            generatorLosowy.seed(seed + static_cast<unsigned>(idx) * 1000u + static_cast<unsigned>(proba));
+
+            vector<vector<double>> feromony(liczbaWierzcholkow, vector<double>(liczbaWierzcholkow, 0.01));
+
+            WynikSciezki najlepszyGlobalny;
+            double najlepszaOcenaGlobalna = -1e18;
+            auto najlepszePokrycieGlobalne = make_pair(0, 0.0);
+
+            for (int iter = 0; iter < parametry.liczbaIteracji; ++iter) {
+                WynikSciezki najlepszyIteracji;
+                double najlepszaOcenaIteracji = -1e18;
+
+                for (int mrowka = 0; mrowka < parametry.liczbaMrowek; ++mrowka) {
+                    bool uzywajDijkstra = (parametry.procentMrowekDijkstra > 0) && (losujProcent(generatorLosowy) < parametry.procentMrowekDijkstra);
+                    WynikSciezki wynik = zbudujRozwiazanieMrowki(
+                        wierzcholki,
+                        graf,
+                        feromony,
+                        indeksStartowy,
+                        P.n,
+                        parametry,
+                        generatorLosowy,
+                        uzywajDijkstra
+                    );
+
+                    double ocena = policzOceneSciezki(wynik);
+                    auto pokrycie = policzPokrycieSpektrum(I.spektrumZBledami, wynik.sekwencja);
+
+                    if (ocena > najlepszaOcenaIteracji) {
+                        najlepszaOcenaIteracji = ocena;
+                        najlepszyIteracji = wynik;
+                    }
+
+                    if (ocena > najlepszaOcenaGlobalna ||
+                        (ocena == najlepszaOcenaGlobalna && pokrycie.first > najlepszePokrycieGlobalne.first)) {
+                        najlepszePokrycieGlobalne = pokrycie;
+                        najlepszaOcenaGlobalna = ocena;
+                        najlepszyGlobalny = wynik;
+                    }
+                }
+
+                double wspolczynnikParowania = 1.0 - parametry.parowanie;
+                for (int i = 0; i < liczbaWierzcholkow; ++i) {
+                    for (int j = 0; j < liczbaWierzcholkow; ++j) {
+                        feromony[i][j] *= wspolczynnikParowania;
+                        if (feromony[i][j] < 1e-6) feromony[i][j] = 1e-6;
+                    }
+                }
+
+                double ocenaDoWzmocnienia = std::max(1.0, najlepszaOcenaIteracji);
+                double depozyt = parametry.q * (ocenaDoWzmocnienia / (najlepszyIteracji.uzyteKrawedzie.size() + 1.0));
+                for (const auto& e : najlepszyIteracji.uzyteKrawedzie) {
+                    feromony[e.first][e.second] += depozyt;
+                }
+            }
+
+            sumaPokrycZBledami += najlepszePokrycieGlobalne.second;
+
+
+            if (I.sekwencjaIstnieje) {
+                sumaLevenshteina += static_cast<double>(policzOdlegloscLevenshteina(I.sekwencja, najlepszyGlobalny.sekwencja));
+            }
+        }
+
+        double sredniePokrycieZBledami = sumaPokrycZBledami / static_cast<double>(liczbaProb);
+        double sredniaZgodnoscPrawdziwe = sumaZgodnosciPrawdziwe / static_cast<double>(liczbaProb);
+        double sredniLevenshtein = I.sekwencjaIstnieje ? (sumaLevenshteina / static_cast<double>(liczbaProb)) : -1.0;
+        cout << procentDijkstry << "\t" << sredniePokrycieZBledami << "\t" << sredniaZgodnoscPrawdziwe << "\t" << sredniLevenshtein << endl;
+    }
+
+    return 0;
+}
+
+static int uruchomBatchWieluPlikow(const vector<string>& nazwyPlikow, unsigned seed) {
+    // Uśredniamy wyniki po wszystkich testach (plikach) dla każdej wartości liczby mrówek.
+    // Test wpływu procentu użycia Dijkstry na jakość wyniku (połączone wszystkie testy).
+    // Liczbę mrówek i iteracji trzymamy stałe, a limit kandydatów ustawiamy na 2.
+    const vector<int> procentyDijkstry = { 0, 5, 10, 15, 20, 25 };
+    vector<double> sumaPokryciaZBledamiDlaProcentow(procentyDijkstry.size(), 0.0);
+    vector<int> licznikPokryciaZBledamiDlaProcentow(procentyDijkstry.size(), 0);
+    vector<double> sumaLevenshteinaDlaProcentow(procentyDijkstry.size(), 0.0);
+    vector<int> licznikLevenshteinaDlaProcentow(procentyDijkstry.size(), 0);
+
+    for (const string& plik : nazwyPlikow) {
+        ParametryMrowkowe parametry;
+        parametry.liczbaIteracji = 100;
+        parametry.liczbaMrowek = 50;
+    parametry.limitKandydatow = 2;
+        parametry.procentMrowekDijkstra = 20;
+        parametry.coIleKrokowDijkstra = 50;
+
+        parametry.alfa = 1.2;
+        parametry.beta = 1.6;
+        parametry.parowanie = 0.1;
+        parametry.liczbaMrowek = 50;
+        parametry.liczbaIteracji = 100;
+        parametry.limitKandydatow = 2;
+        const int liczbaProb = 1;
+
+        const bool bazaZPliku = true;
+        if (!przygotujInstancjeDlaBatch(plik, seed, bazaZPliku)) {
+            cerr << "Nie udalo sie przygotowac instancji (seed=" << seed << ") dla pliku: " << plik << "\n";
+            continue;
+        }
+
+        vector<string> wierzcholki = I.spektrumZBledami;
+        wierzcholki.erase(unique(wierzcholki.begin(), wierzcholki.end()), wierzcholki.end());
+        if (wierzcholki.empty()) {
+            cerr << "Spektrum jest puste dla pliku: " << plik << "\n";
+            continue;
+        }
+
+        int indeksStartowy = 0;
+        int index = znajdzIndeksWierzcholka(wierzcholki, I.pierwszyOligo);
+        if (index >= 0) indeksStartowy = index;
+
+        int liczbaWierzcholkow = static_cast<int>(wierzcholki.size());
+        vector<vector<KrawedzGrafu>> graf(liczbaWierzcholkow);
+        for (int i = 0; i < liczbaWierzcholkow; i++) {
+            for (int j = 0; j < liczbaWierzcholkow; j++) {
+                if (i == j) continue;
+                int overlap = policzNajdluzszyOverlapDowolny(wierzcholki[i], wierzcholki[j]);
+                if (overlap <= 0) continue;
+                if (overlap >= static_cast<int>(wierzcholki[j].size())) continue;
+                KrawedzGrafu e;
+                e.doWierzcholka = j;
+                e.overlap = overlap;
+                e.kategoriaWagi = policzKategorieKrawedzi(overlap, P.k, P.delta_k);
+                graf[i].push_back(e);
+            }
+            sort(graf[i].begin(), graf[i].end(), [](const KrawedzGrafu& a, const KrawedzGrafu& b) {
+                if (a.kategoriaWagi != b.kategoriaWagi) return a.kategoriaWagi < b.kategoriaWagi;
+                return a.overlap > b.overlap;
+            });
+        }
+
+        // Dla spójności, uruchamiamy istniejący loop z `uruchomBatchZPliku`, ale zamiast wypisywać tabelę,
+        // zbieramy tylko (1) Levenshteina i (2) pokrycie spektrum z błędami per procent użycia Dijkstry.
+        for (size_t idx = 0; idx < procentyDijkstry.size(); ++idx) {
+            const int procentDijkstry = procentyDijkstry[idx];
+            parametry.procentMrowekDijkstra = procentDijkstry;
+
+            double sumaPokryciaZBledami = 0.0;
+            double sumaLevenshteina = 0.0;
+
+            mt19937 generatorLosowy(seed);
+            uniform_int_distribution<int> losujProcent(0, 99);
+
+            for (int proba = 0; proba < liczbaProb; ++proba) {
+                generatorLosowy.seed(seed + static_cast<unsigned>(idx) * 1000u + static_cast<unsigned>(proba));
+
+                vector<vector<double>> feromony(liczbaWierzcholkow, vector<double>(liczbaWierzcholkow, 0.01));
+
+                WynikSciezki najlepszyGlobalny;
+                double najlepszaOcenaGlobalna = -1e18;
+                auto najlepszePokrycieGlobalne = make_pair(0, 0.0);
+
+                for (int iter = 0; iter < parametry.liczbaIteracji; ++iter) {
+                    WynikSciezki najlepszyIteracji;
+                    double najlepszaOcenaIteracji = -1e18;
+
+                    for (int mrowka = 0; mrowka < parametry.liczbaMrowek; ++mrowka) {
+                        bool uzywajDijkstra = (parametry.procentMrowekDijkstra > 0) && (losujProcent(generatorLosowy) < parametry.procentMrowekDijkstra);
+                        WynikSciezki wynik = zbudujRozwiazanieMrowki(
+                            wierzcholki,
+                            graf,
+                            feromony,
+                            indeksStartowy,
+                            P.n,
+                            parametry,
+                            generatorLosowy,
+                            uzywajDijkstra
+                        );
+
+                        double ocena = policzOceneSciezki(wynik);
+                        auto pokrycie = policzPokrycieSpektrum(I.spektrumZBledami, wynik.sekwencja);
+
+                        if (ocena > najlepszaOcenaIteracji) {
+                            najlepszaOcenaIteracji = ocena;
+                            najlepszyIteracji = wynik;
+                        }
+
+                        if (ocena > najlepszaOcenaGlobalna ||
+                            (ocena == najlepszaOcenaGlobalna && pokrycie.first > najlepszePokrycieGlobalne.first)) {
+                            najlepszePokrycieGlobalne = pokrycie;
+                            najlepszaOcenaGlobalna = ocena;
+                            najlepszyGlobalny = wynik;
+                        }
+                    }
+
+                    double wspolczynnikParowania = 1.0 - parametry.parowanie;
+                    for (int i = 0; i < liczbaWierzcholkow; ++i) {
+                        for (int j = 0; j < liczbaWierzcholkow; ++j) {
+                            feromony[i][j] *= wspolczynnikParowania;
+                            if (feromony[i][j] < 1e-6) feromony[i][j] = 1e-6;
+                        }
+                    }
+
+                    double ocenaDoWzmocnienia = std::max(1.0, najlepszaOcenaIteracji);
+                    double depozyt = parametry.q * (ocenaDoWzmocnienia / (najlepszyIteracji.uzyteKrawedzie.size() + 1.0));
+                    for (const auto& e : najlepszyIteracji.uzyteKrawedzie) {
+                        feromony[e.first][e.second] += depozyt;
+                    }
+                }
+
+                // (procent) dla instancji i tej liczby mrówek
+                sumaPokryciaZBledami += najlepszePokrycieGlobalne.second;
+
+                if (I.sekwencjaIstnieje) {
+                    sumaLevenshteina += static_cast<double>(policzOdlegloscLevenshteina(I.sekwencja, najlepszyGlobalny.sekwencja));
+                }
+            }
+
+            // Pokrycie z błędami zawsze istnieje w batch (bo działa na spektrum z błędami)
+            sumaPokryciaZBledamiDlaProcentow[idx] += (sumaPokryciaZBledami / static_cast<double>(liczbaProb));
+            licznikPokryciaZBledamiDlaProcentow[idx] += 1;
+
+            if (I.sekwencjaIstnieje) {
+                sumaLevenshteinaDlaProcentow[idx] += (sumaLevenshteina / static_cast<double>(liczbaProb));
+                licznikLevenshteinaDlaProcentow[idx] += 1;
+            }
+        }
+    }
+
+    cout << "\n--- SREDNIE POKRYCIE SPEKTRUM Z BLEDAMI (polaczone wszystkie testy) ---\n";
+    cout << "procent_mrowek_dijkstra\tsrednie_pokrycie_z_bledami_procent" << endl;
+    for (size_t idx = 0; idx < procentyDijkstry.size(); ++idx) {
+        if (licznikPokryciaZBledamiDlaProcentow[idx] == 0) {
+            cout << procentyDijkstry[idx] << "\t" << -1 << endl;
+            continue;
+        }
+        double avg = sumaPokryciaZBledamiDlaProcentow[idx] / static_cast<double>(licznikPokryciaZBledamiDlaProcentow[idx]);
+        cout << procentyDijkstry[idx] << "\t" << avg << endl;
+    }
+
+    cout << "\n--- SREDNI LEVENSHTEIN (polaczone wszystkie testy) ---\n";
+    cout << "procent_mrowek_dijkstra\tsredni_levenshtein" << endl;
+    for (size_t idx = 0; idx < procentyDijkstry.size(); ++idx) {
+        if (licznikLevenshteinaDlaProcentow[idx] == 0) {
+            cout << procentyDijkstry[idx] << "\t" << -1 << endl;
+            continue;
+        }
+        double avg = sumaLevenshteinaDlaProcentow[idx] / static_cast<double>(licznikLevenshteinaDlaProcentow[idx]);
+        cout << procentyDijkstry[idx] << "\t" << avg << endl;
+    }
+
+    return 0;
+}
+
+int main(int argc, char** argv) {
     srand(time(nullptr));
+
+    // --- Tryb: testy parametrow instancji (delta_k) ---
+    // Generuje 30 instancji do ./testy_instancji/delta_k (po 10 na delta_k=0,1,2),
+    // uruchamia algorytm dla 10 seedow na kazdej instancji i wypisuje srednie metryki.
+    if (hasFlag(argc, argv, "--delta-k-test")) {
+        const string folder = "./testy_instancji/delta_k";
+        vector<int> delty = {0, 1, 2};
+        int instancjiNaDelta = 10;
+        int liczbaSeedow = 10;
+        unsigned int seedStart = 243u;
+
+        // parametry instancji zgodnie z prosba
+        int n = 600;
+        int k = 10;
+        int lNeg = 60;
+        int lPoz = 60;
+        bool repAllowed = true;
+        bool probablePositive = true;
+
+        // pozwol nadpisac liczniki przez CLI (opcjonalnie)
+        (void)tryGetArgInt(argc, argv, "--n", n);
+        (void)tryGetArgInt(argc, argv, "--k", k);
+        (void)tryGetArgInt(argc, argv, "--lneg", lNeg);
+        (void)tryGetArgInt(argc, argv, "--lpoz", lPoz);
+        int rep = 1;
+        int prob = 1;
+        if (tryGetArgInt(argc, argv, "--repAllowed", rep)) repAllowed = (rep != 0);
+        if (tryGetArgInt(argc, argv, "--probablePositive", prob)) probablePositive = (prob != 0);
+        int seedTmp = 243;
+        if (tryGetArgInt(argc, argv, "--seedStart", seedTmp) && seedTmp > 0) seedStart = (unsigned)seedTmp;
+
+        string outDir = folder;
+        string outDirCli;
+        if (tryGetArgValue(argc, argv, "--outDir", outDirCli) && !outDirCli.empty()) {
+            outDir = outDirCli;
+        }
+
+        cout << "Generowanie instancji do: " << outDir << endl;
+        wygenerujInstancjeDeltaKDoFolderu(
+            outDir,
+            n,
+            k,
+            delty,
+            instancjiNaDelta,
+            lNeg,
+            lPoz,
+            repAllowed,
+            probablePositive,
+            seedStart
+        );
+
+        testParametrowInstancjiDeltaK(outDir, delty, instancjiNaDelta, liczbaSeedow, seedStart);
+        return 0;
+    }
+
+    // --- Tryb: testy parametrow instancji (k) ---
+    // Generuje 40 instancji do ./testy_instancji/k (po 10 na k=7,8,9,10),
+    // uruchamia algorytm dla 10 seedow na kazdej instancji i wypisuje srednie metryki.
+    if (hasFlag(argc, argv, "--k-test")) {
+        const string folder = "./testy_instancji/k";
+        vector<int> wartosciK = {7, 8, 9, 10};
+        int instancjiNaK = 10;
+        int liczbaSeedow = 10;
+        unsigned int seedStart = 243u;
+
+        int n = 600;
+        int deltaK = 2;
+        int lNeg = 60;
+        int lPoz = 60;
+        bool repAllowed = true;
+        bool probablePositive = true;
+
+        (void)tryGetArgInt(argc, argv, "--n", n);
+        (void)tryGetArgInt(argc, argv, "--delta_k", deltaK);
+        (void)tryGetArgInt(argc, argv, "--lneg", lNeg);
+        (void)tryGetArgInt(argc, argv, "--lpoz", lPoz);
+        int rep = 1;
+        int prob = 1;
+        if (tryGetArgInt(argc, argv, "--repAllowed", rep)) repAllowed = (rep != 0);
+        if (tryGetArgInt(argc, argv, "--probablePositive", prob)) probablePositive = (prob != 0);
+        int seedTmp = 243;
+        if (tryGetArgInt(argc, argv, "--seedStart", seedTmp) && seedTmp > 0) seedStart = (unsigned)seedTmp;
+
+        string outDir = folder;
+        string outDirCli;
+        if (tryGetArgValue(argc, argv, "--outDir", outDirCli) && !outDirCli.empty()) {
+            outDir = outDirCli;
+        }
+
+        cout << "Generowanie instancji do: " << outDir << endl;
+        wygenerujInstancjeKDoFolderu(
+            outDir,
+            n,
+            wartosciK,
+            instancjiNaK,
+            deltaK,
+            lNeg,
+            lPoz,
+            repAllowed,
+            probablePositive,
+            seedStart
+        );
+
+        testParametrowInstancjiK(outDir, wartosciK, instancjiNaK, liczbaSeedow, seedStart);
+        return 0;
+    }
+
+    {
+        vector<string> batchPliki;
+        bool maBatch = false;
+        bool seedPodany = false;
+        unsigned seed = 0u;
+
+        for (int i = 1; i < argc; ++i) {
+            string a = argv[i];
+            if (a == "--batch") {
+                maBatch = true;
+
+                // Obsługa dwóch form:
+                // 1) --batch plik1
+                // 2) --batch plik1 plik2 plik3  (aż do następnego argumentu zaczynającego się od "--")
+                while (i + 1 < argc) {
+                    string next = argv[i + 1];
+                    if (next.rfind("--", 0) == 0) {
+                        break;
+                    }
+                    batchPliki.push_back(next);
+                    ++i;
+                }
+            } else if (a == "--seed" && i + 1 < argc) {
+                try {
+                    seed = static_cast<unsigned>(stoul(argv[++i]));
+                    seedPodany = true;
+                } catch (...) {
+                    cerr << "Niepoprawna wartosc --seed. Uzywam domyslnego 123.\n";
+                    seed = 123u;
+                    seedPodany = true;
+                }
+            }
+        }
+
+        if (maBatch) {
+            if (batchPliki.empty()) {
+                cerr << "Brak plikow po --batch.\n";
+                return 2;
+            }
+            if (!seedPodany) {
+                seed = 0u;
+            }
+
+            // Zachowujemy dotychczasowe zachowanie (wypisuje tabelę) dla każdego pliku,
+            // a po wszystkim dopisujemy tabelkę uśrednioną Levenshteina dla liczby mrówek.
+            int kod = 0;
+            for (const string& plik : batchPliki) {
+                int k = uruchomBatchZPliku(plik, seed);
+                if (k != 0) kod = k;
+            }
+            uruchomBatchWieluPlikow(batchPliki, seed);
+            return kod;
+        }
+
+        if (!seedPodany && maBatch) {
+            std::random_device rd;
+            seed = rd();
+        }
+
+        if (maBatch) {
+            if (batchPliki.empty()) {
+                cerr << "Brak plikow po --batch. Przyklad: --batch test1.txt test2.txt --seed 123\n";
+                return 2;
+            }
+
+            // Dla wielu plików: drukujemy osobną tabelę dla każdego.
+            // Żeby wyniki były deterministyczne w ramach jednego uruchomienia, robimy seed per plik.
+            int kod = 0;
+            for (size_t fi = 0; fi < batchPliki.size(); ++fi) {
+                if (fi > 0) {
+                    cout << "\n";
+                }
+                cout << "# plik: " << batchPliki[fi] << "\n";
+
+                unsigned seedDlaPliku = seed + static_cast<unsigned>(fi) * 100000u;
+                int r = uruchomBatchZPliku(batchPliki[fi], seedDlaPliku);
+                if (r != 0 && kod == 0) {
+                    kod = r;
+                }
+            }
+            return kod;
+        }
+    }
+
     char wybor = '1';
     while (wybor != '0') {
         wyswietlanieMenu();
